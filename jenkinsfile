@@ -1,0 +1,454 @@
+pipeline {
+    agent none
+
+    triggers {
+        githubPush()
+        pullRequest()
+    }
+
+    stages {
+        stage('Build Extensions') {
+            matrix {
+                axes {
+                    axis {
+                        name 'example'
+                        values 'clap-button-message', 'cell-toolbar', 'codemirror-extension', 'command-palette', 'commands', 
+                               'completer', 'contentheader', 'context-menu', 'custom-log-console', 'datagrid', 
+                               'documents', 'hello-world', 'launcher', 'kernel-messaging', 'kernel-output', 
+                               'log-messages', 'main-menu', 'metadata-form', 'notifications', 'react-widget', 
+                               'settings', 'shout-button-message', 'signals', 'state', 'toolbar-button', 
+                               'toparea-text-widget', 'widgets'
+                    }
+                    axis {
+                        name 'os'
+                        values 'ubuntu-latest', 'macos-latest', 'windows-latest'
+                    }
+                }
+                stages {
+                    stage('Checkout') {
+                        agent { label "${os}" }
+                        steps {
+                            checkout scm
+                        }
+                    }
+                    stage('Path Filter') {
+                        steps {
+                            script {
+                                def filterOutput = sh(script: "dorny/paths-filter@v2 --filters='${example}/**'", returnStdout: true).trim()
+                                env.FILTER_OUTPUT = filterOutput
+                            }
+                        }
+                    }
+                    stage('Cache Lerna') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            cache(path: '**/node_modules', key: "${os}-lerna-${hashFiles('**/package.json')}", restoreKeys: "${os}-lerna-")
+                        }
+                    }
+                    stage('Check Config Files') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            sh """
+                            diff ../hello-world/setup.py setup.py
+                            diff ../hello-world/tsconfig.json tsconfig.json
+                            diff ../hello-world/.yarnrc.yml .yarnrc.yml
+                            diff ../hello-world/ui-tests/jupyter_server_test_config.py ./ui-tests/jupyter_server_test_config.py
+                            diff ../hello-world/ui-tests/playwright.config.js ./ui-tests/playwright.config.js
+                            """
+                        }
+                    }
+                    stage('Install Node') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            script {
+                                setupNode(version: '18.x')
+                            }
+                        }
+                    }
+                    stage('Install Python') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            script {
+                                setupPython(version: '3.11', architecture: 'x64')
+                            }
+                        }
+                    }
+                    stage('Get Pip Cache Dir') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            script {
+                                def pipCacheDir = sh(script: "pip cache dir", returnStdout: true).trim()
+                                env.PIP_CACHE_DIR = pipCacheDir
+                            }
+                        }
+                    }
+                    stage('Cache Pip') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            cache(path: env.PIP_CACHE_DIR, key: "${os}-pip-${hashFiles('environment.yml')}", restoreKeys: "${os}-pip-")
+                        }
+                    }
+                    stage('Install Python Dependencies') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            sh 'python -m pip install --upgrade pip "jupyterlab>=4.0.0"'
+                        }
+                    }
+                    stage('Build Extension') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            sh '''
+                            touch yarn.lock
+                            pip install -e . -v
+                            jupyter labextension develop . --overwrite
+                            '''
+                        }
+                    }
+                    stage('Lint Files') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            sh 'jlpm run lint:check'
+                        }
+                    }
+                    stage('Check Extension Installation') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            sh '''
+                            jupyter labextension list 2>&1 | tee labextension.list
+                            cat labextension.list | grep -ie "@jupyterlab-examples/*.*OK"
+                            '''
+                        }
+                    }
+                    stage('Integration Tests') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' && os.startsWith('Linux') }
+                        }
+                        steps {
+                            sh 'jlpm playwright test'
+                        }
+                    }
+                    stage('Upload UI Test Artifacts') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' && os.startsWith('Linux') }
+                        }
+                        steps {
+                            archiveArtifacts artifacts: "${example}/ui-tests/test-results"
+                        }
+                    }
+                    stage('Uninstall Extension') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' && (os.startsWith('Linux') || os.startsWith('macOS')) }
+                        }
+                        steps {
+                            sh '''
+                            export NAME=`python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['name'])"`
+                            pip uninstall -y ${NAME}
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+        stage('Build Server Extension') {
+            matrix {
+                axes {
+                    axis {
+                        name 'os'
+                        values 'ubuntu-latest', 'macos-latest', 'windows-latest'
+                    }
+                }
+                stages {
+                    stage('Checkout') {
+                        agent { label "${os}" }
+                        steps {
+                            checkout scm
+                        }
+                    }
+                    stage('Path Filter') {
+                        steps {
+                            script {
+                                def filterOutput = sh(script: "dorny/paths-filter@v2 --filters='server-extension/**'", returnStdout: true).trim()
+                                env.FILTER_OUTPUT = filterOutput
+                            }
+                        }
+                    }
+                    stage('Cache Lerna') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            cache(path: '**/node_modules', key: "${os}-lerna-${hashFiles('server-extension/package.json')}", restoreKeys: "${os}-lerna-")
+                        }
+                    }
+                    stage('Install Node') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            script {
+                                setupNode(version: '18.x')
+                            }
+                        }
+                    }
+                    stage('Install Python') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            script {
+                                setupPython(version: '3.11', architecture: 'x64')
+                            }
+                        }
+                    }
+                    stage('Get Pip Cache Dir') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            script {
+                                def pipCacheDir = sh(script: "pip cache dir", returnStdout: true).trim()
+                                env.PIP_CACHE_DIR = pipCacheDir
+                            }
+                        }
+                    }
+                    stage('Cache Pip') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            cache(path: env.PIP_CACHE_DIR, key: "${os}-pip-${hashFiles('environment.yml')}", restoreKeys: "${os}-pip-")
+                        }
+                    }
+                    stage('Install Python Dependencies') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            sh 'python -m pip install --upgrade pip jupyterlab~=4.0.0 build'
+                        }
+                    }
+                    stage('Install NPM Dependencies') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            dir('server-extension') {
+                                sh 'jlpm'
+                            }
+                        }
+                    }
+                    stage('Lint Files') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            dir('server-extension') {
+                                sh 'jlpm run lint:check'
+                            }
+                        }
+                    }
+                    stage('Build Extension as User') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            dir('server-extension') {
+                                sh '''
+                                python -m build --sdist
+                                pip install ./dist/jupyterlab_examples_server* --pre --find-links=dist --no-cache-dir
+                                python -m jupyterlab.browser_check
+                                '''
+                            }
+                        }
+                    }
+                    stage('Check Extension as Dev') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' && (os.startsWith('Linux') || os.startsWith('macOS')) }
+                        }
+                        steps {
+                            sh '''
+                            jupyter server extension list 2>&1 | tee serverextension.list
+                            cat serverextension.list | grep -ie "jupyterlab_examples_server.*OK"
+                            jupyter labextension list 2>&1 | tee labextension.list
+                            cat labextension.list | grep -ie "@jupyterlab-examples/server-extension.*OK"
+                            python -m jupyterlab.browser_check
+                            '''
+                        }
+                    }
+                    stage('Clean Extension Installation') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            sh '''
+                            pip uninstall -y jupyterlab_examples_server
+                            jupyter lab clean
+                            jupyter server extension list
+                            jupyter labextension list
+                            '''
+                        }
+                    }
+                    stage('Build Extension as Dev') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' }
+                        }
+                        steps {
+                            dir('server-extension') {
+                                sh 'pip install .'
+                            }
+                        }
+                    }
+                    stage('Install Galata') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' && os.startsWith('Linux') }
+                        }
+                        steps {
+                            dir('server-extension/ui-tests') {
+                                withEnv(["PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1"]) {
+                                    sh 'jlpm install'
+                                }
+                            }
+                        }
+                    }
+                    stage('Set up Browser Cache') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' && os.startsWith('Linux') }
+                        }
+                        steps {
+                            cache(path: "${env.WORKSPACE}/pw-browsers", key: "${os}-${hashFiles('yarn.lock')}")
+                        }
+                    }
+                    stage('Install Browser') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' && os.startsWith('Linux') }
+                        }
+                        steps {
+                            dir('server-extension/ui-tests') {
+                                sh 'jlpm playwright install chromium'
+                            }
+                        }
+                    }
+                    stage('Integration Tests') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' && os.startsWith('Linux') }
+                        }
+                        steps {
+                            dir('server-extension/ui-tests') {
+                                sh 'jlpm playwright test'
+                            }
+                        }
+                    }
+                    stage('Upload UI Test Artifacts') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' && os.startsWith('Linux') }
+                        }
+                        steps {
+                            archiveArtifacts artifacts: 'server-extension/ui-tests/test-results'
+                        }
+                    }
+                    stage('Uninstall Extension') {
+                        when {
+                            expression { env.FILTER_OUTPUT == 'true' && (os.startsWith('Linux') || os.startsWith('macOS')) }
+                        }
+                        steps {
+                            sh '''
+                            export NAME=`python -c "import tomllib; print(tomllib.load(open('server-extension/pyproject.toml', 'rb'))['project']['name'])"`
+                            pip uninstall -y ${NAME}
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+        stage('Build All') {
+            matrix {
+                axes {
+                    axis {
+                        name 'os'
+                        values 'ubuntu-latest', 'macos-latest', 'windows-latest'
+                    }
+                }
+                stages {
+                    stage('Checkout') {
+                        agent { label "${os}" }
+                        steps {
+                            checkout scm
+                        }
+                    }
+                    stage('Cache Lerna') {
+                        steps {
+                            cache(path: '**/node_modules', key: "${os}-lerna-${hashFiles('**/package.json')}", restoreKeys: "${os}-lerna-")
+                        }
+                    }
+                    stage('Install Node') {
+                        steps {
+                            script {
+                                setupNode(version: '18.x')
+                            }
+                        }
+                    }
+                    stage('Install Python') {
+                        steps {
+                            script {
+                                setupPython(version: '3.11', architecture: 'x64')
+                            }
+                        }
+                    }
+                    stage('Get Pip Cache Dir') {
+                        steps {
+                            script {
+                                def pipCacheDir = sh(script: "pip cache dir", returnStdout: true).trim()
+                                env.PIP_CACHE_DIR = pipCacheDir
+                            }
+                        }
+                    }
+                    stage('Cache Pip') {
+                        steps {
+                            cache(path: env.PIP_CACHE_DIR, key: "${os}-pip-${hashFiles('environment.yml')}", restoreKeys: "${os}-pip-")
+                        }
+                    }
+                    stage('Install Python Dependencies') {
+                        steps {
+                            sh 'python -m pip install jupyterlab~=4.0.0 pytest pytest-check-links "pytest-jupyter[server]>=0.6.0"'
+                        }
+                    }
+                    stage('Bootstrap the jlpm deps') {
+                        steps {
+                            sh 'jlpm'
+                        }
+                    }
+                    stage('Build all the extensions') {
+                        steps {
+                            sh '''
+                            # Check embedded snippets
+                            jlpm lint:check
+                            # Check links as last step as new tutorial may set links not yet valid (like file not yet in main)
+                            jlpm run lerna exec --concurrency 4 -- "pytest --check-links"
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
