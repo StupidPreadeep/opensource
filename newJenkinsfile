@@ -1,0 +1,96 @@
+pipeline {
+    agent {
+        label 'linux' // Ensure your Jenkins has a Linux agent with this label
+    }
+    
+    tools {
+        nodejs 'NodeJS' // Ensure this is the name of your NodeJS installation in Jenkins
+    }
+    
+    environment {
+        REPO_URL = 'https://github.com/jupyterlab/extension-examples.git'
+        BRANCH = 'main'
+        EXTENSION_DIR = 'hello-world'
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: "${BRANCH}", url: "${REPO_URL}"
+            }
+        }
+        
+        stage('Install Dependencies') {
+            steps {
+                script {
+                    dir("${EXTENSION_DIR}") {
+                        sh 'jlpm install'
+                    }
+                }
+            }
+        }
+        
+        stage('Lint') {
+            steps {
+                script {
+                    dir("${EXTENSION_DIR}") {
+                        sh 'jlpm lint'
+                    }
+                }
+            }
+        }
+        
+        stage('Build') {
+            steps {
+                script {
+                    dir("${EXTENSION_DIR}") {
+                        sh 'jlpm build'
+                    }
+                }
+            }
+        }
+        
+        stage('Unit Test') {
+            steps {
+                script {
+                    dir("${EXTENSION_DIR}") {
+                        sh 'jlpm test' // Assuming `jlpm test` runs unit tests
+                    }
+                }
+            }
+        }
+
+        stage('E2E Test') {
+            steps {
+                script {
+                    dir("${EXTENSION_DIR}") {
+                        // Add your E2E test command here
+                        // For example: sh 'jlpm e2e' if you have a script defined for E2E tests
+                        echo 'Running E2E tests...'
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy') {
+            steps {
+                script {
+                    dir("${EXTENSION_DIR}") {
+                        // Replace this with actual deployment commands.
+                        echo 'Deploying...'
+                        // Example: sh 'scp -r build/* user@server:/path/to/deploy'
+                    }
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo 'Pipeline succeeded!'
+        }
+        failure {
+            echo 'Pipeline failed!'
+        }
+    }
+}
