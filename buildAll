@@ -1,0 +1,121 @@
+pipeline {
+    agent none
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 60, unit: 'MINUTES')
+    }
+    stages {
+        stage('Matrix') {
+            matrix {
+                axes {
+                    axis {
+                        name 'OS'
+                        values 'ubuntu-latest', 'macos-latest', 'windows-latest'
+                    }
+                }
+                stages {
+                    stage('Checkout') {
+                        agent { label "${OS}" }
+                        steps {
+                            checkout scm
+                        }
+                    }
+                    stage('Cache Lerna') {
+                        steps {
+                            script {
+                                def cacheKey = "${env.OS}-lerna-${sh(script: 'find . -name package.json | xargs sha256sum', returnStdout: true).trim()}"
+                                cache(maxCacheSize: '1GB', key: cacheKey) {
+                                    sh 'ls -d **/node_modules || true'
+                                }
+                            }
+                        }
+                    }
+                    stage('Install Node') {
+                        steps {
+                            script {
+                                if (isUnix()) {
+                                    sh 'curl -sL https://deb.nodesource.com/setup_18.x | sudo -E bash -'
+                                    sh 'sudo apt-get install -y nodejs'
+                                } else {
+                                    bat 'powershell -Command "Invoke-WebRequest -Uri https://nodejs.org/dist/v18.0.0/node-v18.0.0-x64.msi -OutFile nodejs.msi; msiexec /i nodejs.msi /quiet"'
+                                }
+                            }
+                        }
+                    }
+                    stage('Install Python') {
+                        steps {
+                            script {
+                                if (isUnix()) {
+                                    sh 'sudo apt-get update'
+                                    sh 'sudo apt-get install -y python3.11'
+                                } else {
+                                    bat 'choco install python --version=3.11.0'
+                                }
+                            }
+                        }
+                    }
+                    stage('Get pip cache dir') {
+                        steps {
+                            script {
+                                if (isUnix()) {
+                                    env.PIP_CACHE_DIR = sh(script: 'pip cache dir', returnStdout: true).trim()
+                                } else {
+                                    env.PIP_CACHE_DIR = bat(script: 'pip cache dir', returnStdout: true).trim()
+                                }
+                            }
+                        }
+                    }
+                    stage('Cache pip') {
+                        steps {
+                            script {
+                                def cacheKey = "${env.OS}-pip-${sh(script: 'sha256sum environment.yml', returnStdout: true).trim()}"
+                                cache(maxCacheSize: '1GB', key: cacheKey) {
+                                    sh 'ls ${PIP_CACHE_DIR} || true'
+                                }
+                            }
+                        }
+                    }
+                    stage('Install Python dependencies') {
+                        steps {
+                            script {
+                                if (isUnix()) {
+                                    sh 'python -m pip install jupyterlab~=4.0.0 pytest pytest-check-links "pytest-jupyter[server]>=0.6.0"'
+                                } else {
+                                    bat 'python -m pip install jupyterlab~=4.0.0 pytest pytest-check-links "pytest-jupyter[server]>=0.6.0"'
+                                }
+                            }
+                        }
+                    }
+                    stage('Bootstrap the jlpm deps') {
+                        steps {
+                            script {
+                                if (isUnix()) {
+                                    sh 'jlpm'
+                                } else {
+                                    bat 'jlpm'
+                                }
+                            }
+                        }
+                    }
+                    stage('Build all the extensions') {
+                        steps {
+                            script {
+                                if (isUnix()) {
+                                    sh '''
+                                        jlpm lint:check
+                                        jlpm run lerna exec --concurrency 4 -- "pytest --check-links"
+                                    '''
+                                } else {
+                                    bat '''
+                                        jlpm lint:check
+                                        jlpm run lerna exec --concurrency 4 -- "pytest --check-links"
+                                    '''
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
